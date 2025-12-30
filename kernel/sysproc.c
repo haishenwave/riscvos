@@ -2,15 +2,25 @@
 #include "printf.h"
 #include "syscall.h"
 #include "proc.h"
+#include "fs.h"
 
 extern int argint(int, int*);
 extern int argaddr(int, uint64_t*);
 extern int argstr(int, char*, int);
 extern int copyin(pagetable_t, char*, uint64_t, uint64_t);
+extern int copyout(pagetable_t, uint64_t, char*, uint64_t);
 extern void console_putc(char c);
 extern uint64_t get_time(void);
 extern void log_dump(void);
 extern void log_stats(void);
+
+// 引入日志事务控制函数
+extern void begin_op(void);
+extern void end_op(void);
+
+// 文件系统相关外部函数
+extern int filewrite(struct file*, char*, int);
+extern int fileread(struct file*, char*, int);
 
 int sys_fork(void) {
     return fork();
@@ -33,7 +43,6 @@ int sys_wait(void) {
     if(pid > 0 && addr != 0) {
         //将状态写回用户空间
         struct proc *p = myproc();
-        //简化实现： 直接写入
         pte_t *pte = walk_lookup(p->pagetable, addr);
         if(pte && (*pte & PTE_V) && (*pte & PTE_U)) {
             uint64_t pa = PTE_PA(*pte) + (addr & (PGSIZE -1));
@@ -59,8 +68,8 @@ int sys_sbrk(void) {
     return sbrk(n);
 }
 
-extern int filewrite(struct file*, char*, int);
-
+// sys_write: 写文件或控制台
+// 关键修复：添加 begin_op() 和 end_op() 事务保护
 int sys_write(void) {
     int fd, n;
     uint64_t addr;
@@ -73,6 +82,7 @@ int sys_write(void) {
         return -1;
 
     // 控制台输出 (fd = 1 或 2)
+    // 控制台输出不需要文件系统事务
     if(fd == 1 || fd == 2) {
         char buf[128];
         int total = 0;
@@ -99,9 +109,21 @@ int sys_write(void) {
     int total = 0;
     while(n > 0) {
         int m = n > 512 ? 512 : n;
-        if(copyin(p->pagetable, buf, addr, m) < 0)
+        
+        // --- 事务开始 ---
+        begin_op();
+        
+        if(copyin(p->pagetable, buf, addr, m) < 0) {
+            end_op(); // 错误退出前必须结束事务
             return -1;
+        }
+        
+        // 写入数据 (内部可能会调用 log_write)
         int r = filewrite(f, buf, m);
+        
+        // --- 事务结束 ---
+        end_op();
+        
         if(r <= 0)
             break;
         total += r;
@@ -110,9 +132,6 @@ int sys_write(void) {
     }
     return total;
 }
-
-extern int fileread(struct file*, char*, int);
-extern int copyout(uint64_t*, uint64_t, char*, uint64_t);
 
 int sys_read(void) {
     int fd, n;
@@ -131,6 +150,7 @@ int sys_read(void) {
     }
 
     // 文件读取
+    // 读取通常不需要事务（除非涉及更新访问时间等元数据，这里简化处理）
     if(fd < 0 || fd >= NOFILE || p->ofile[fd] == 0)
         return -1;
 
@@ -152,6 +172,7 @@ int sys_read(void) {
     }
     return total;
 }
+
 int sys_uptime(void) {
     return (int)get_time();
 }
