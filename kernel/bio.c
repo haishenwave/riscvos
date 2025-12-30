@@ -97,9 +97,7 @@ void brelse(struct buf *b) {
     // acquire(&bcache.lock);
     b->refcnt--;
     if (b->refcnt == 0) {
-        // 如果引用计数为0，把它移到链表头（MRU），
-        // 但 xv6 的实现是把空闲块放在链表头？
-        // 不，xv6 这里是把它放在 head.next。
+        // 如果引用计数为0，把它移到链表头（MRU）
         // bget 是从 head.prev (尾部) 开始找空闲块，
         // 也就是说，刚释放的块（放在头部）是最晚被回收的（MRU）。
         
